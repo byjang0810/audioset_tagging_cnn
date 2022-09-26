@@ -137,8 +137,8 @@ class AttBlock(nn.Module):
 
 
 class Cnn14(nn.Module):
-    def __init__(self, sample_rate, window_size, hop_size, mel_bins, fmin, 
-        fmax, classes_num):
+    def __init__(self, sample_rate=16000, window_size=2048, hop_size=512, mel_bins=128, fmin=0.0, 
+        fmax=None, classes_num=527):
         
         super(Cnn14, self).__init__()
 

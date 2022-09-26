@@ -11,7 +11,8 @@ from utilities import create_folder, get_filename
 from models import *
 from pytorch_utils import move_data_to_device
 import config
-
+import copy
+import json
 
 def audio_tagging(args):
     """Inference audio tagging result of an audio clip.
@@ -128,7 +129,7 @@ def sound_event_detection(args):
     with torch.no_grad():
         model.eval()
         batch_output_dict = model(waveform, None)
-
+    print(batch_output_dict.keys())
     framewise_output = batch_output_dict['framewise_output'].data.cpu().numpy()[0]
     """(time_steps, classes_num)"""
 
@@ -145,6 +146,7 @@ def sound_event_detection(args):
     stft = librosa.core.stft(y=waveform[0].data.cpu().numpy(), n_fft=window_size, 
         hop_length=hop_size, window='hann', center=True)
     frames_num = stft.shape[-1]
+    print(f"frames_num: {frames_num}")
 
     fig, axs = plt.subplots(2, 1, sharex=True, figsize=(10, 4))
     axs[0].matshow(np.log(np.abs(stft)), origin='lower', aspect='auto', cmap='jet')
@@ -166,42 +168,225 @@ def sound_event_detection(args):
     return framewise_output, labels
 
 
+def postprocess(res, include_end_time, pps, seconds):
+        """후처리 함수
+
+        sed한 인식 결과를 받아 구간 합치기와 사용되지 않는 카테고리를 제거하여 반환합니다
+
+        Args:
+            res : sed한 인식 결과
+            include_end_time: boolean, 결과값에 끝 시간을 포함할 지 결정합니다
+            pps :
+                integer, post process segments의 줄임말로 sed 인식 결과를 합칠 때 구간에서 몇 개를 무시할 지 결정합니다
+                인식 단위가 seconds(기본값 0.5초)이므로 인식 결과가 변동이 심합니다 이를 제거해주기 위하여
+                특정 label 사이에 pps 갯수만큼의 다른 label들이 있다면 무시하고 특정 label 하나로 통합합니다
+                예를 들면 다음과 같습니다
+                Music | Music | Speech | Speech | Music
+                이 있다면 pps가 2일 경우 2개를 무시하므로 다음과 같이 하나의 구간으로 바뀝니다.
+                Music | Music | Music  | Music  | Music
+                pps가 1일 경우 pps보다 사이에 있는 구간 갯수가 더 많으므로 변화가 없습니다
+                pps가 0이면 모든 구간을 살리고 연속된 구간 합치기만 진행합니다
+
+        Returns:
+            final_res : dict, label별 시작시간이 기록된 dict입니다
+            dict {"Speech":[시작시간1, 시작시간2, ...}
+            또는 include_end_time이 True라면 다음과 같이 end time 또한 기록합니다
+            dict {"Speech":[[시작시간1, 끝시간1], [시작시간2,끝시간2], ...}
+            예시 :
+                {
+                    "Speech" : [0, 10, 20, ...],
+                    "Music" : [30, ...],
+                    ...
+                }
+        """
+        # 사용되지 않는 카테고리 제거하고 이후 구간 합치기를 위해
+        # 가장 prob이 높은 하나만 남깁니다. 이 때 구간을 합치므로 개별 prob는 의미가 없어 제거합니다.
+        # remain_category = ["Speech", "Music"]
+
+        # new_result = []
+        # for r in res:
+        #     idx = r["idx"]
+        #     sed = r["sed"]
+        #     new_sed = []
+        #     contain_speech = False
+        #     for label in sed:
+        #         if isinstance(label, list):
+        #             label = label[0]
+        #         if label == "Speech":
+        #             contain_speech = True
+        #             break
+        #     if contain_speech:
+        #         continue
+
+        #     for label in sed:
+        #         if isinstance(label, list):
+        #             label = label[0]
+           
+        #         if label in remain_category:
+        #             new_sed = label
+        #             break
+        #     if len(new_sed) > 0:
+        #         new_result.append({"idx": idx, "sed": new_sed})
+        # res = new_result
+
+
+        # result_template = {"Music":[], "Speech":[], "Silence": [], "Giggle": []}
+        result_template = {s:[] for s in total_labels}
+        after_pp = copy.deepcopy(result_template)
+      
+        n = 0
+        s_time, e_time = 0, 0
+        new_seg = True
+        while n < len(res):
+            r = res[n]
+            s, e = r["idx"]
+            label = r["sed"]
+            if new_seg:
+                s_time = s
+                e_time = e
+                new_seg = False
+
+            an = n + pps + 1
+            # 끝
+            if (n + 1) == len(res):
+                e_time = e
+                after_pp[label].append([s_time, e_time] if include_end_time else s_time)
+                n += 1
+            # 구간 pps만큼 뛰어넘어 합치기
+            elif (
+                an < len(res)
+                and res[an]["idx"][0] == (e + pps * seconds)
+                and res[an]["sed"] == label
+            ):
+                n = an
+                e_time = res[an]["idx"][1]
+            # 연속된 구간 합치기, 중간 빈 구간이 pps 이하임
+            elif (
+                res[n + 1]["idx"][0] <= (e + pps * seconds)
+                and res[n + 1]["sed"] == label
+            ):
+                e_time = res[n + 1]["idx"][1]
+                n += 1
+            else:
+                e_tiem = e
+                after_pp[label].append([s_time, e_time] if include_end_time else s_time)
+                new_seg = True
+                n += 1
+
+        #  minimum_time 미만의 Music 구간은 삭제
+        minimum_time = 10
+        new_musics = []
+        for seg in after_pp["Music"]:
+            if seg[1] - seg[0] >= minimum_time:
+                new_musics.append(seg)
+        after_pp["Music"] = new_musics
+
+        return after_pp
+
 if __name__ == '__main__':
-
-    parser = argparse.ArgumentParser(description='Example of parser. ')
-    subparsers = parser.add_subparsers(dest='mode')
-
-    parser_at = subparsers.add_parser('audio_tagging')
-    parser_at.add_argument('--sample_rate', type=int, default=32000)
-    parser_at.add_argument('--window_size', type=int, default=1024)
-    parser_at.add_argument('--hop_size', type=int, default=320)
-    parser_at.add_argument('--mel_bins', type=int, default=64)
-    parser_at.add_argument('--fmin', type=int, default=50)
-    parser_at.add_argument('--fmax', type=int, default=14000) 
-    parser_at.add_argument('--model_type', type=str, required=True)
-    parser_at.add_argument('--checkpoint_path', type=str, required=True)
-    parser_at.add_argument('--audio_path', type=str, required=True)
-    parser_at.add_argument('--cuda', action='store_true', default=False)
-
-    parser_sed = subparsers.add_parser('sound_event_detection')
-    parser_sed.add_argument('--sample_rate', type=int, default=32000)
-    parser_sed.add_argument('--window_size', type=int, default=1024)
-    parser_sed.add_argument('--hop_size', type=int, default=320)
-    parser_sed.add_argument('--mel_bins', type=int, default=64)
-    parser_sed.add_argument('--fmin', type=int, default=50)
-    parser_sed.add_argument('--fmax', type=int, default=14000) 
-    parser_sed.add_argument('--model_type', type=str, required=True)
-    parser_sed.add_argument('--checkpoint_path', type=str, required=True)
-    parser_sed.add_argument('--audio_path', type=str, required=True)
-    parser_sed.add_argument('--cuda', action='store_true', default=False)
+    import numpy as np
+    import librosa
+    from argparse import Namespace
+    # /home/boyoon/audio/dataset/959_cheongchun_conv.wav
+    #args = Namespace(audio_path='/home/boyoon/audio/dataset/959_cheongchun_conv.wav', checkpoint_path="Cnn14_DecisionLevelMax_mAP=0.385.pth", cuda=True, sample_rate=16000, window_size=1024, hop_size=320, mel_bins=64, fmin=50, fmax=14000, mode='sound_event_detection', model_type="Cnn14_DecisionLevelMax")
+    args = Namespace(audio_path='/home/boyoon/audio/speaker-diarization/3pro.wav', checkpoint_path="Cnn14_DecisionLevelMax_mAP=0.385.pth", cuda=True, sample_rate=16000, window_size=1024, hop_size=320, mel_bins=64, fmin=50, fmax=14000, mode='sound_event_detection', model_type="Cnn14_DecisionLevelMax")
     
-    args = parser.parse_args()
+    # parser = argparse.ArgumentParser(description='Example of parser. ')
+    # subparsers = parser.add_subparsers(dest='mode')
 
-    if args.mode == 'audio_tagging':
-        audio_tagging(args)
+    # parser_at = subparsers.add_parser('audio_tagging')
+    # parser_at.add_argument('--sample_rate', type=int, default=32000)
+    # parser_at.add_argument('--window_size', type=int, default=1024)
+    # parser_at.add_argument('--hop_size', type=int, default=320)
+    # parser_at.add_argument('--mel_bins', type=int, default=64)
+    # parser_at.add_argument('--fmin', type=int, default=50)
+    # parser_at.add_argument('--fmax', type=int, default=14000) 
+    # parser_at.add_argument('--model_type', type=str, required=True)
+    # parser_at.add_argument('--checkpoint_path', type=str, required=True)
+    # parser_at.add_argument('--audio_path', type=str, required=True)
+    # parser_at.add_argument('--cuda', action='store_true', default=False)
+    
+    # parser_sed = subparsers.add_parser('sound_event_detection')
+    # parser_sed.add_argument('--sample_rate', type=int, default=16000)
+    # parser_sed.add_argument('--window_size', type=int, default=1024)
+    # parser_sed.add_argument('--hop_size', type=int, default=320)
+    # parser_sed.add_argument('--mel_bins', type=int, default=64)
+    # parser_sed.add_argument('--fmin', type=int, default=50)
+    # parser_sed.add_argument('--fmax', type=int, default=14000) 
+    # parser_sed.add_argument('--model_type', type=str, required=True)
+    # parser_sed.add_argument('--checkpoint_path', type=str, required=True)
+    # parser_sed.add_argument('--audio_path', type=str, required=True)
+    # parser_sed.add_argument('--cuda', action='store_true', default=False)
+    
+    # args = parser.parse_args()
+ 
+    # if args.mode == 'audio_tagging':
+    #     audio_tagging(args)
 
-    elif args.mode == 'sound_event_detection':
-        sound_event_detection(args)
+    # elif args.mode == 'sound_event_detection':
+    framewise_output, labels = sound_event_detection(args)
+    max_output = np.argmax(framewise_output, axis=1)
+    
+    # 시간 계산
 
-    else:
-        raise Exception('Error argument!')
+    #948.767375 s
+    # 15분 38초
+
+    # 프레임당 시간 : 0.01999973
+    # duration * sample_rate = frame_number
+    #(time_steps x classes_num): (47439, 527)
+    # 왜 47439개가 나왔는지 그게 궁금한 거임
+    # 내 계산에 따르면 더 많이 나와야 하는데
+    # 16000 * duration
+
+
+    total_duration = librosa.get_duration(filename=args.audio_path)
+    time_steps = framewise_output.shape[0] # num of frames
+    frame_sec = total_duration / time_steps
+    print(f"duration: {total_duration}")
+    print(time_steps)
+    duration = time_steps / 16000
+   
+    total_result = []
+    temp = dict()
+    temp['idx'] = [0,0]
+    #temp['start'] = 0
+    #temp['end'] = 0
+    for i in range(1, time_steps): # 1 ~ 47438
+        if max_output[i] == max_output[i-1]:
+            #temp['end'] += frame_sec
+            temp['idx'][1] += frame_sec
+        else:
+            label = labels[max_output[i-1]]
+            temp['sed'] = label
+            total_result.append(temp)
+            temp = dict()
+            temp['idx'] = [0,0]
+            temp['idx'][0] = i * frame_sec
+            temp['idx'][1] = (i+1) * frame_sec
+            #temp['start'] = i * frame_sec
+            #temp['end']  = (i+1) * frame_sec
+    label = labels[max_output[-1]]
+    temp['sed'] = label
+    total_result.append(temp)
+    # with open("3pro_wav.json", 'w') as f:
+    #     json.dump(total_result, f, ensure_ascii=False, indent=4)
+    # print(total_result)     
+    #print(47439 * duration / 60)
+
+
+   
+
+   
+
+
+    # import pandas as pd
+    # with open('/home/boyoon/audio/audioset_tagging_cnn/metadata/class_labels_indices.csv') as f:
+    #     df = pd.read_csv(f)
+    #     total_labels = df['display_name'].values
+ 
+    # result = postprocess(total_result, True, 2, 10)
+    # print(result)
+        
+    # else:
+        # raise Exception('Error argument!')
