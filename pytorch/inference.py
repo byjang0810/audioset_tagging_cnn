@@ -288,13 +288,14 @@ def main():
     args = Namespace(audio_path='/home/boyoon/audio/speaker-diarization/3pro.wav', checkpoint_path="Cnn14_DecisionLevelMax_mAP=0.385.pth", cuda=True, sample_rate=16000, window_size=1024, hop_size=320, mel_bins=64, fmin=50, fmax=14000, mode='sound_event_detection', model_type="Cnn14_DecisionLevelMax")   
     framewise_output, labels = sound_event_detection(args)
     max_output = np.argmax(framewise_output, axis=1)
-
+    
     total_duration = librosa.get_duration(filename=args.audio_path)
     time_steps = framewise_output.shape[0] # num of frames
     frame_sec = total_duration / time_steps
-    print(f"duration: {total_duration}")
-    print(time_steps)
-    duration = time_steps / 16000
+    print(max_output)
+    
+    # print(f"duration: {total_duration}")
+    # print(time_steps)
    
     total_result = []
     temp = dict()
@@ -315,7 +316,7 @@ def main():
     label = labels[max_output[-1]]
     temp['sed'] = label
     total_result.append(temp)
-    return total_result
+    return total_result, max_output
  
 
 
