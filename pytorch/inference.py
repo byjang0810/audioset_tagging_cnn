@@ -6,7 +6,7 @@ import argparse
 import librosa
 import matplotlib.pyplot as plt
 import torch
-
+from argparse import Namespace
 from utilities import create_folder, get_filename
 from models import *
 from pytorch_utils import move_data_to_device
@@ -283,62 +283,11 @@ def postprocess(res, include_end_time, pps, seconds):
 
         return after_pp
 
-if __name__ == '__main__':
-    import numpy as np
-    import librosa
-    from argparse import Namespace
-    # /home/boyoon/audio/dataset/959_cheongchun_conv.wav
+def main():
     #args = Namespace(audio_path='/home/boyoon/audio/dataset/959_cheongchun_conv.wav', checkpoint_path="Cnn14_DecisionLevelMax_mAP=0.385.pth", cuda=True, sample_rate=16000, window_size=1024, hop_size=320, mel_bins=64, fmin=50, fmax=14000, mode='sound_event_detection', model_type="Cnn14_DecisionLevelMax")
-    args = Namespace(audio_path='/home/boyoon/audio/speaker-diarization/3pro.wav', checkpoint_path="Cnn14_DecisionLevelMax_mAP=0.385.pth", cuda=True, sample_rate=16000, window_size=1024, hop_size=320, mel_bins=64, fmin=50, fmax=14000, mode='sound_event_detection', model_type="Cnn14_DecisionLevelMax")
-    
-    # parser = argparse.ArgumentParser(description='Example of parser. ')
-    # subparsers = parser.add_subparsers(dest='mode')
-
-    # parser_at = subparsers.add_parser('audio_tagging')
-    # parser_at.add_argument('--sample_rate', type=int, default=32000)
-    # parser_at.add_argument('--window_size', type=int, default=1024)
-    # parser_at.add_argument('--hop_size', type=int, default=320)
-    # parser_at.add_argument('--mel_bins', type=int, default=64)
-    # parser_at.add_argument('--fmin', type=int, default=50)
-    # parser_at.add_argument('--fmax', type=int, default=14000) 
-    # parser_at.add_argument('--model_type', type=str, required=True)
-    # parser_at.add_argument('--checkpoint_path', type=str, required=True)
-    # parser_at.add_argument('--audio_path', type=str, required=True)
-    # parser_at.add_argument('--cuda', action='store_true', default=False)
-    
-    # parser_sed = subparsers.add_parser('sound_event_detection')
-    # parser_sed.add_argument('--sample_rate', type=int, default=16000)
-    # parser_sed.add_argument('--window_size', type=int, default=1024)
-    # parser_sed.add_argument('--hop_size', type=int, default=320)
-    # parser_sed.add_argument('--mel_bins', type=int, default=64)
-    # parser_sed.add_argument('--fmin', type=int, default=50)
-    # parser_sed.add_argument('--fmax', type=int, default=14000) 
-    # parser_sed.add_argument('--model_type', type=str, required=True)
-    # parser_sed.add_argument('--checkpoint_path', type=str, required=True)
-    # parser_sed.add_argument('--audio_path', type=str, required=True)
-    # parser_sed.add_argument('--cuda', action='store_true', default=False)
-    
-    # args = parser.parse_args()
- 
-    # if args.mode == 'audio_tagging':
-    #     audio_tagging(args)
-
-    # elif args.mode == 'sound_event_detection':
+    args = Namespace(audio_path='/home/boyoon/audio/speaker-diarization/3pro.wav', checkpoint_path="Cnn14_DecisionLevelMax_mAP=0.385.pth", cuda=True, sample_rate=16000, window_size=1024, hop_size=320, mel_bins=64, fmin=50, fmax=14000, mode='sound_event_detection', model_type="Cnn14_DecisionLevelMax")   
     framewise_output, labels = sound_event_detection(args)
     max_output = np.argmax(framewise_output, axis=1)
-    
-    # 시간 계산
-
-    #948.767375 s
-    # 15분 38초
-
-    # 프레임당 시간 : 0.01999973
-    # duration * sample_rate = frame_number
-    #(time_steps x classes_num): (47439, 527)
-    # 왜 47439개가 나왔는지 그게 궁금한 거임
-    # 내 계산에 따르면 더 많이 나와야 하는데
-    # 16000 * duration
-
 
     total_duration = librosa.get_duration(filename=args.audio_path)
     time_steps = framewise_output.shape[0] # num of frames
@@ -350,11 +299,9 @@ if __name__ == '__main__':
     total_result = []
     temp = dict()
     temp['idx'] = [0,0]
-    #temp['start'] = 0
-    #temp['end'] = 0
+
     for i in range(1, time_steps): # 1 ~ 47438
         if max_output[i] == max_output[i-1]:
-            #temp['end'] += frame_sec
             temp['idx'][1] += frame_sec
         else:
             label = labels[max_output[i-1]]
@@ -364,29 +311,14 @@ if __name__ == '__main__':
             temp['idx'] = [0,0]
             temp['idx'][0] = i * frame_sec
             temp['idx'][1] = (i+1) * frame_sec
-            #temp['start'] = i * frame_sec
-            #temp['end']  = (i+1) * frame_sec
+            
     label = labels[max_output[-1]]
     temp['sed'] = label
     total_result.append(temp)
-    # with open("3pro_wav.json", 'w') as f:
-    #     json.dump(total_result, f, ensure_ascii=False, indent=4)
-    # print(total_result)     
-    #print(47439 * duration / 60)
-
-
-   
-
-   
-
-
-    # import pandas as pd
-    # with open('/home/boyoon/audio/audioset_tagging_cnn/metadata/class_labels_indices.csv') as f:
-    #     df = pd.read_csv(f)
-    #     total_labels = df['display_name'].values
+    return total_result
  
-    # result = postprocess(total_result, True, 2, 10)
-    # print(result)
-        
-    # else:
-        # raise Exception('Error argument!')
+
+
+if __name__ == '__main__':
+    main()
+    
